@@ -1,0 +1,37 @@
+# env
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# node
+node_modules/
+frontend/node_modules/
+
+# build
+dist/
+build/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# data
+data/repositories/
+data/chroma/
+data/chroma_db/
+data/processed_chunks/
+
+# test artifacts
+test_db/
+
+# OS
+.DS_Store
+Thumbs.db
