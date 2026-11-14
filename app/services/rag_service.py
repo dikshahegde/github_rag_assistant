@@ -15,7 +15,7 @@ class RAGService:
         if not chunks:
             return {
                 "answer": "No relevant files or documentation chunks were found in the database. "
-                          "Please ensure the repository contains files with supported extensions (.py, .js, .ts, .md, .java).",
+                          "Please ensure the repository contains supported source code or Markdown files.",
                 "citations": [],
                 "retrieved_chunks": []
             }

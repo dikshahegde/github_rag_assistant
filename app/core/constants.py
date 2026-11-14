@@ -5,7 +5,7 @@ SUPPORTED_EXTENSIONS = {
     ".jsx",
     ".tsx",
     ".md",
-    ".java"
+    ".java",
     ".html"
 }
 
@@ -20,6 +20,7 @@ IGNORE_PATTERNS = {
     ".pytest_cache",
     ".idea",
     ".vscode",
+    "rag_summary.md",
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml"

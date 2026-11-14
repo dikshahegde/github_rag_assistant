@@ -3,7 +3,7 @@ from app.models.request_models import ChatQueryRequest
 from app.models.response_models import ChatResponse
 from app.services.rag_service import RAGService
 from app.core.logger import logger
-from app.core.config import settings
+from app.core.paths import chat_history_path
 import json
 from typing import List, Dict, Any
 
@@ -35,26 +35,34 @@ def query_repository(payload: ChatQueryRequest):
 @router.get("/{repo_name}/history")
 def get_chat_history(repo_name: str):
     """Load saved chat history for a repo."""
-    chat_path = settings.processed_chunks_dir / f"{repo_name}_chat.json"
+    try:
+        chat_path = chat_history_path(repo_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not chat_path.exists():
         return []
     try:
         with open(chat_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         logger.error(f"Error loading chat history for {repo_name}: {e}")
-        return []
+        raise HTTPException(status_code=500, detail="Failed to load chat history.")
 
 
 @router.post("/{repo_name}/history")
 def save_chat_history(repo_name: str, messages: List[Dict[str, Any]]):
     """Save chat history for a repo."""
     try:
-        chat_path = settings.processed_chunks_dir / f"{repo_name}_chat.json"
+        chat_path = chat_history_path(repo_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        chat_path.parent.mkdir(parents=True, exist_ok=True)
         with open(chat_path, "w", encoding="utf-8") as f:
             json.dump(messages, f, indent=2)
         return {"status": "saved"}
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         logger.error(f"Error saving chat history for {repo_name}: {e}")
         raise HTTPException(
             status_code=500,

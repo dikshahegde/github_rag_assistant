@@ -1,3 +1,6 @@
+import math
+from typing import List
+
 from google import genai
 from google.genai import types
 from chromadb import EmbeddingFunction, Documents, Embeddings
@@ -19,15 +22,30 @@ class EmbeddingGenerator:
         return cls._client
 
     @classmethod
-    def get_embeddings(cls, texts) -> list:
+    def get_embeddings(
+        cls, texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT"
+    ) -> List[List[float]]:
+        if not texts:
+            return []
+
         client = cls.get_client()
         logger.info(f"Generating embeddings for {len(texts)} documents")
         response = client.models.embed_content(
             model="gemini-embedding-001",
             contents=texts,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
+            config=types.EmbedContentConfig(task_type=task_type)
         )
+        if response.embeddings is None or len(response.embeddings) != len(texts):
+            raise RuntimeError("Embedding service returned an unexpected number of embeddings.")
+
         embeddings = [list(e.values) for e in response.embeddings]
+        dimensions = {len(embedding) for embedding in embeddings}
+        if (
+            0 in dimensions
+            or len(dimensions) != 1
+            or any(not math.isfinite(value) for embedding in embeddings for value in embedding)
+        ):
+            raise RuntimeError("Embedding service returned invalid embedding vectors.")
         logger.info(f"Received {len(embeddings)} embeddings, dim={len(embeddings[0])}")
         return embeddings
 

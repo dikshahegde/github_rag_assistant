@@ -44,33 +44,40 @@ class ResponseGenerator:
             system_instruction=RAG_SYSTEM_INSTRUCTION
         )
         
-        # Parse citations from raw response
-        # Matches patterns like [src/auth.py:50-90]
-        # Regex captures: Group 1 = file, Group 2 = start_line, Group 3 = end_line
-        matches = re.findall(r"\[([^:\s]+):(\d+)-(\d+)\]", raw_response)
-        
         citations = []
         seen_citations = set()
-        for match in matches:
-            file_path, start, end = match
-            citation_key = f"{file_path}:{start}-{end}"
-            if citation_key not in seen_citations:
-                seen_citations.add(citation_key)
-                
-                # Search retrieved chunks to find a snippet of code
-                snippet = ""
-                for chunk in retrieved_chunks:
-                    meta = chunk["metadata"]
-                    meta_path = meta.get("path", meta.get("file", ""))
-                    if meta_path == file_path:
-                        snippet = chunk["text"]
-                        break
-                        
-                citations.append({
-                    "file": file_path,
-                    "start_line": int(start),
-                    "end_line": int(end),
-                    "snippet": snippet
-                })
-                
-        return raw_response, citations
+        citation_pattern = re.compile(r"\[([^:\s]+):(\d+)-(\d+)\]")
+
+        def validate_citation(match: re.Match) -> str:
+            file_path, start_text, end_text = match.groups()
+            start, end = int(start_text), int(end_text)
+            if start < 1 or end < start:
+                return f"{file_path} (lines {start}-{end})"
+
+            for chunk in retrieved_chunks:
+                metadata = chunk["metadata"]
+                chunk_path = metadata.get("path", metadata.get("file", ""))
+                chunk_start = int(metadata.get("start_line", 1))
+                chunk_end = int(metadata.get("end_line", chunk_start))
+                if (
+                    chunk_path == file_path
+                    and chunk_start <= start
+                    and end <= chunk_end
+                ):
+                    citation_key = f"{file_path}:{start}-{end}"
+                    if citation_key not in seen_citations:
+                        seen_citations.add(citation_key)
+                        lines = chunk["text"].splitlines()
+                        snippet = "\n".join(lines[start - chunk_start : end - chunk_start + 1])
+                        citations.append({
+                            "file": file_path,
+                            "start_line": start,
+                            "end_line": end,
+                            "snippet": snippet,
+                        })
+                    return match.group(0)
+
+            return f"{file_path} (lines {start}-{end})"
+
+        validated_response = citation_pattern.sub(validate_citation, raw_response)
+        return validated_response, citations

@@ -320,6 +320,8 @@ class CodeChunker:
     @classmethod
     def chunk_lines_simple(cls, content: str, file_path: str, chunk_size_lines: int = 40) -> List[Chunk]:
         """Fallback lines-based chunker for simple text files or files with unsupported extensions."""
+        if chunk_size_lines < 1:
+            raise ValueError("chunk_size_lines must be at least 1.")
         lines = content.splitlines()
         chunks: List[Chunk] = []
         

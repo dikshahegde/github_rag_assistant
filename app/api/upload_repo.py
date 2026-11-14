@@ -4,6 +4,8 @@ from app.models.response_models import RepoUploadResponse
 from app.services.repository_service import RepositoryService
 from app.core.logger import logger
 from app.core.config import settings
+from app.core.paths import chat_history_path, repository_path, validate_repo_name
+from app.ingestion.github_loader import GitHubLoader
 from app.vectorstore.chroma_manager import chroma_manager
 from typing import List, Dict, Any
 import os
@@ -12,6 +14,11 @@ router = APIRouter()
 @router.post("", response_model=RepoUploadResponse)
 def upload_repository(payload: RepoUploadRequest):
     """Clones a remote repository, parses supported files, chunks them, and generates an architectural summary."""
+    try:
+        validate_repo_name(GitHubLoader.get_repo_name_from_url(payload.url))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
     try:
         logger.info(f"Starting ingestion process for repository URL: {payload.url}")
         result = RepositoryService.process_repository(
@@ -67,26 +74,35 @@ def delete_repository(repo_name: str):
         os.chmod(path, stat.S_IWRITE)
         func(path)
 
+    try:
+        repo_path = repository_path(repo_name)
+        chat_path = chat_history_path(repo_name)
+        validate_repo_name(repo_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Delete metadata file
     meta_path = settings.processed_chunks_dir / f"{repo_name}_meta.json"
     if meta_path.exists():
         meta_path.unlink()
 
     # Delete chat history file
-    chat_path = settings.processed_chunks_dir / f"{repo_name}_chat.json"
     if chat_path.exists():
         chat_path.unlink()
 
     # Delete cloned repo folder (including read-only .git files on Windows)
-    repo_path = settings.cloned_repos_dir / repo_name
     if repo_path.exists():
-        shutil.rmtree(repo_path, onexc=force_remove_readonly)
+        shutil.rmtree(repo_path, onerror=force_remove_readonly)
 
     # Delete vector store collection
     try:
         chroma_manager.delete_collection(repo_name)
     except Exception as e:
-        logger.warning(f"Could not delete chroma collection for {repo_name}: {e}")
+        logger.exception(f"Could not delete chroma collection for {repo_name}.")
+        raise HTTPException(
+            status_code=500,
+            detail="Repository files were removed, but the vector index could not be deleted.",
+        ) from e
 
     logger.info(f"Deleted repository '{repo_name}' and all associated data.")
     return {"status": "deleted", "repo_name": repo_name}

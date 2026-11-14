@@ -1,8 +1,7 @@
-import os
 import json
-from pathlib import Path
 from typing import Dict, Any, List
 from app.core.config import settings
+from app.core.paths import repository_path, validate_repo_name
 from app.core.logger import logger
 from app.ingestion.github_loader import GitHubLoader
 from app.ingestion.file_parser import FileParser
@@ -15,6 +14,7 @@ class RepositoryService:
     @classmethod
     def process_repository(cls, repo_url: str, force_clone: bool = False) -> Dict[str, Any]:
         repo_name = GitHubLoader.get_repo_name_from_url(repo_url)
+        validate_repo_name(repo_name)
         repo_path = GitHubLoader.clone_repository(repo_url, force_clone=force_clone)
 
         if force_clone:
@@ -153,23 +153,22 @@ class RepositoryService:
     @staticmethod
     def get_file_content(repo_name: str, file_path: str) -> str:
         """Retrieves raw content of a file in the repository."""
-        full_path = settings.cloned_repos_dir / repo_name / file_path
-        # Prevent Directory Traversal attacks
+        repo_root = repository_path(repo_name).resolve()
+        full_path = repo_root / file_path
         try:
             resolved_path = full_path.resolve()
-            cloned_repos_resolved = settings.cloned_repos_dir.resolve()
-            if not str(resolved_path).startswith(str(cloned_repos_resolved)):
+            if not resolved_path.is_relative_to(repo_root):
                 raise ValueError("Unauthorized path access.")
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.error(f"Security validation failed for path {file_path}: {e}")
             raise ValueError("Invalid file path.")
 
-        if not full_path.exists():
+        if not resolved_path.is_file():
             raise FileNotFoundError(f"File {file_path} not found in repository.")
             
         try:
-            with open(full_path, "r", encoding="utf-8") as f:
+            with open(resolved_path, "r", encoding="utf-8") as f:
                 return f.read()
         except UnicodeDecodeError:
-            with open(full_path, "r", encoding="latin-1") as f:
+            with open(resolved_path, "r", encoding="latin-1") as f:
                 return f.read()

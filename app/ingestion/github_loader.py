@@ -11,11 +11,11 @@ from app.core.constants import IGNORE_PATTERNS
 class GitHubLoader:
     @staticmethod
     def get_repo_name_from_url(url: str) -> str:
-        clean_url = url.rstrip("/")
+        clean_url = url.strip().rstrip("/")
         match = re.search(r"/([^/]+?)(?:\.git)?$", clean_url)
         if match:
             return match.group(1)
-        return "temp_repo"
+        raise ValueError("Repository URL must end with a repository name.")
 
     @classmethod
     def clone_repository(cls, url: str, force_clone: bool = False) -> Path:
@@ -74,7 +74,8 @@ class GitHubLoader:
             # Prune ignored directories in-place so os.walk doesn't recurse into them
             dirs[:] = [
                 d for d in dirs
-                if not cls.should_ignore(current_dir / d, repo_path)
+                if not (current_dir / d).is_symlink()
+                and not cls.should_ignore(current_dir / d, repo_path)
             ]
 
             # Skip if current directory itself should be ignored
@@ -83,7 +84,7 @@ class GitHubLoader:
 
             for file in files:
                 file_path = current_dir / file
-                if not cls.should_ignore(file_path, repo_path):
+                if not file_path.is_symlink() and not cls.should_ignore(file_path, repo_path):
                     files_list.append(file_path)
                     logger.debug(f"Including file: {file_path}")
 

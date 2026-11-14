@@ -84,7 +84,7 @@ Configuration:
 
 ## Running Automated Tests
 
-Run backend unit tests for chunking, API endpoints, and database interfaces:
+Run backend unit tests for chunking, API endpoints, and vector retrieval:
 ```bash
-pytest
+python -m pytest
 ```

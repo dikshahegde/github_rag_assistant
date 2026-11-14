@@ -10,7 +10,10 @@ class GeminiClient:
     @classmethod
     def get_client(cls):
         if cls._client is None:
-            cls._client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            api_key = settings.GEMINI_API_KEY.strip()
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not set.")
+            cls._client = genai.Client(api_key=api_key)
             logger.info("Gemini text client initialized.")
         return cls._client
 
@@ -31,4 +34,6 @@ class GeminiClient:
             contents=prompt,
             config=config
         )
+        if not response.text or not response.text.strip():
+            raise RuntimeError("Gemini returned an empty response.")
         return response.text

@@ -1,6 +1,7 @@
 import json
+import hashlib
 import math
-import os
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any
 from app.core.config import settings
@@ -9,6 +10,10 @@ from app.ingestion.code_chunker import Chunk
 
 
 def cosine_similarity(a: List[float], b: List[float]) -> float:
+    if len(a) != len(b):
+        raise ValueError("Embedding dimensions do not match.")
+    if any(not math.isfinite(value) for value in (*a, *b)):
+        raise ValueError("Embeddings must contain only finite numbers.")
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
@@ -36,27 +41,20 @@ class ChromaManager:
 
     def add_chunks(self, repo_name: str, chunks: List[Chunk]):
         if not chunks:
-            logger.warning("No chunks to index")
-            return
+            logger.warning("No chunks to index; replacing the repository index with an empty index.")
 
         from app.ingestion.embedding_generator import EmbeddingGenerator
 
         path = self._get_store_path(repo_name)
 
-        # Load existing records if any
-        records = []
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                records = json.load(f)
-
-        existing_ids = {r["id"] for r in records}
-
         documents = [c.text for c in chunks]
         metadatas = [c.to_dict() for c in chunks]
         ids = []
-        for idx, c in enumerate(chunks):
-            safe_file = c.file_path.replace("/", "_").replace(".", "_")
-            ids.append(f"{safe_file}_{c.start_line}_{c.end_line}_{idx}")
+        for chunk in chunks:
+            identity = "\0".join(
+                (chunk.file_path, str(chunk.start_line), str(chunk.end_line), chunk.text)
+            )
+            ids.append(hashlib.sha256(identity.encode("utf-8")).hexdigest())
 
         batch_size = 50
         new_records = []
@@ -65,6 +63,8 @@ class ChromaManager:
             logger.info(f"Embedding batch {i}-{end_idx}")
             batch_texts = documents[i:end_idx]
             embeddings = EmbeddingGenerator.get_embeddings(batch_texts)
+            if len(embeddings) != len(batch_texts):
+                raise RuntimeError("Embedding service returned an unexpected number of embeddings.")
             for j, emb in enumerate(embeddings):
                 record_id = ids[i + j]
                 new_records.append({
@@ -75,19 +75,29 @@ class ChromaManager:
                 })
             logger.info(f"Batch {i}-{end_idx} embedded successfully")
 
-        # Upsert: replace existing ids, append new ones
-        records_by_id = {r["id"]: r for r in records}
-        for r in new_records:
-            records_by_id[r["id"]] = r
-        final_records = list(records_by_id.values())
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temporary_path = Path(f.name)
+                json.dump(new_records, f)
+            temporary_path.replace(path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
 
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(final_records, f)
-
-        logger.info(f"Indexed {len(new_records)} chunks for '{repo_name}'. Total: {len(final_records)}")
+        logger.info(f"Indexed {len(new_records)} chunks for '{repo_name}'.")
 
     def query_collection(self, repo_name: str, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         from app.ingestion.embedding_generator import EmbeddingGenerator
+
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1.")
 
         path = self._get_store_path(repo_name)
         if not path.exists():
@@ -100,7 +110,9 @@ class ChromaManager:
         if not records:
             return []
 
-        query_emb = EmbeddingGenerator.get_embeddings([query])[0]
+        query_emb = EmbeddingGenerator.get_embeddings(
+            [query], task_type="RETRIEVAL_QUERY"
+        )[0]
 
         scored = []
         for r in records:

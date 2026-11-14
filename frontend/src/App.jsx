@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Upload,  
   FileText, 
@@ -14,7 +14,17 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
+
+async function getErrorMessage(response, fallback) {
+  try {
+    const data = await response.json();
+    if (typeof data.detail === 'string') return data.detail;
+  } catch {
+    // Use the provided fallback for non-JSON responses.
+  }
+  return fallback;
+}
 
 // ─── File Tree Helpers ───────────────────────────────────────────────────────
 
@@ -200,7 +210,6 @@ function App() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [uploadSuccess, setUploadSuccess] = useState('');
-  const [isBackendHealthy, setIsBackendHealthy] = useState(true);
 
   const [activeTab, setActiveTab] = useState('summary');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -211,15 +220,11 @@ function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [currentQuery, setCurrentQuery] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [retrievedChunks, setRetrievedChunks] = useState([]);
 
   const messagesEndRef = useRef(null);
   const codeLinesRef = useRef([]);
-
-  useEffect(() => {
-    fetchHealth();
-    fetchRepositories();
-  }, []);
+  const selectedRepoNameRef = useRef(null);
+  const fileRequestRef = useRef(0);
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -238,66 +243,76 @@ function App() {
     }
   }, [highlightLines, fileContent]);
 
-  const fetchHealth = async () => {
+  const fetchHealth = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/health`);
+      if (!res.ok) throw new Error('Health check failed');
       const data = await res.json();
       if (data.status === 'healthy') {
-        setIsBackendHealthy(true);
         if (!data.gemini_key_configured) {
           setUploadError('Warning: GEMINI_API_KEY is not configured in the .env file. API queries will fail.');
         }
+      } else {
+        setUploadError('Backend health check failed. Please check the server logs.');
       }
-    } catch (e) {
-      setIsBackendHealthy(false);
+    } catch {
       setUploadError('Could not connect to FastAPI backend. Please ensure uvicorn is running on port 8000.');
     }
-  };
+  }, []);
 
-  const fetchRepositories = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/upload`);
-      if (res.ok) {
-        const data = await res.json();
-        setRepositories(data);
-        if (data.length > 0 && !selectedRepo) {
-          handleSelectRepo(data[0]);
-        }
-      }
-    } catch (e) {
-      console.error('Error fetching repositories:', e);
-    }
-  };
-
-  const handleSelectRepo = async (repo) => {
+  const handleSelectRepo = useCallback(async (repo) => {
+    selectedRepoNameRef.current = repo.repo_name;
+    fileRequestRef.current += 1;
     setSelectedRepo(repo);
     setSelectedFile(null);
     setFileContent('');
+    setIsLoadingFile(false);
     setHighlightLines(null);
     setActiveTab('summary');
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/chat/${repo.repo_name}/history`);
-      if (res.ok) {
-        const history = await res.json();
-        if (history.length > 0) {
-          setChatMessages(history);
-        } else {
-          setChatMessages([{
-            sender: 'assistant',
-            text: `I have loaded the repository **${repo.repo_name}**. Ask me anything about this codebase!`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }]);
-        }
+      const res = await fetch(`${API_BASE_URL}/api/chat/${encodeURIComponent(repo.repo_name)}/history`);
+      if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to load chat history.'));
+      const history = await res.json();
+      if (selectedRepoNameRef.current !== repo.repo_name) return;
+      if (history.length > 0) {
+        setChatMessages(history);
+      } else {
+        setChatMessages([{
+          sender: 'assistant',
+          text: `I have loaded the repository **${repo.repo_name}**. Ask me anything about this codebase!`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }]);
       }
     } catch (e) {
+      console.error('Failed to load chat history:', e);
+      if (selectedRepoNameRef.current !== repo.repo_name) return;
       setChatMessages([{
         sender: 'assistant',
         text: `I have loaded the repository **${repo.repo_name}**. Ask me anything about this codebase!`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
     }
-  };
+  }, []);
+
+  const fetchRepositories = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/upload`);
+      if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to load repositories.'));
+      const data = await res.json();
+      setRepositories(data);
+      if (data.length > 0 && !selectedRepoNameRef.current) {
+        handleSelectRepo(data[0]);
+      }
+    } catch (e) {
+      console.error('Error fetching repositories:', e);
+    }
+  }, [handleSelectRepo]);
+
+  useEffect(() => {
+    fetchHealth();
+    fetchRepositories();
+  }, [fetchHealth, fetchRepositories]);
 
   // ─── Clear chat history for a repo ───────────────────────────────────────
   const handleClearChat = async () => {
@@ -309,13 +324,15 @@ function App() {
     }];
     setChatMessages(fresh);
     try {
-      await fetch(`${API_BASE_URL}/api/chat/${selectedRepo.repo_name}/history`, {
+      const response = await fetch(`${API_BASE_URL}/api/chat/${encodeURIComponent(selectedRepo.repo_name)}/history`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(fresh)
       });
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to clear chat history.'));
     } catch (e) {
       console.error('Failed to clear chat history:', e);
+      setUploadError(e.message);
     }
   };
 
@@ -324,12 +341,16 @@ function App() {
     e.stopPropagation(); // don't trigger handleSelectRepo
     if (!window.confirm(`Remove "${repoName}" from active repositories?`)) return;
     try {
-      await fetch(`${API_BASE_URL}/api/upload/${repoName}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE_URL}/api/upload/${encodeURIComponent(repoName)}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to delete repository.'));
     } catch (err) {
-      // even if backend delete fails, remove from UI
+      setUploadError(err.message || 'Failed to delete repository.');
+      return;
     }
     setRepositories(prev => prev.filter(r => r.repo_name !== repoName));
     if (selectedRepo?.repo_name === repoName) {
+      selectedRepoNameRef.current = null;
+      fileRequestRef.current += 1;
       setSelectedRepo(null);
       setChatMessages([]);
       setSelectedFile(null);
@@ -356,8 +377,7 @@ function App() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Ingestion failed');
+        throw new Error(await getErrorMessage(res, 'Ingestion failed.'));
       }
 
       const data = await res.json();
@@ -377,6 +397,8 @@ function App() {
 
   const handleSelectFile = async (filePath) => {
     if (!selectedRepo) return;
+    const requestId = ++fileRequestRef.current;
+    const repoName = selectedRepo.repo_name;
     setSelectedFile(filePath);
     setIsLoadingFile(true);
     setHighlightLines(null);
@@ -384,22 +406,27 @@ function App() {
 
     try {
       const encodedPath = encodeURIComponent(filePath);
-      const res = await fetch(`${API_BASE_URL}/api/upload/${selectedRepo.repo_name}/files/${encodedPath}`);
+      const res = await fetch(`${API_BASE_URL}/api/upload/${encodeURIComponent(repoName)}/files/${encodedPath}`);
+      if (requestId !== fileRequestRef.current) return;
       if (res.ok) {
         const data = await res.json();
         setFileContent(data.content);
       } else {
         setFileContent('Error loading file content.');
       }
-    } catch (err) {
-      setFileContent('Error connecting to backend to fetch file.');
+    } catch {
+      if (requestId === fileRequestRef.current) {
+        setFileContent('Error connecting to backend to fetch file.');
+      }
     } finally {
-      setIsLoadingFile(false);
+      if (requestId === fileRequestRef.current) setIsLoadingFile(false);
     }
   };
 
   const handleCitationClick = async (filePath, startLine, endLine) => {
     if (!selectedRepo) return;
+    const requestId = ++fileRequestRef.current;
+    const repoName = selectedRepo.repo_name;
     setSelectedFile(filePath);
     setIsLoadingFile(true);
     setHighlightLines({ start: startLine, end: endLine });
@@ -407,17 +434,20 @@ function App() {
 
     try {
       const encodedPath = encodeURIComponent(filePath);
-      const res = await fetch(`${API_BASE_URL}/api/upload/${selectedRepo.repo_name}/files/${encodedPath}`);
+      const res = await fetch(`${API_BASE_URL}/api/upload/${encodeURIComponent(repoName)}/files/${encodedPath}`);
+      if (requestId !== fileRequestRef.current) return;
       if (res.ok) {
         const data = await res.json();
         setFileContent(data.content);
       } else {
         setFileContent('Error loading file content.');
       }
-    } catch (err) {
-      setFileContent('Error connecting to backend to fetch file.');
+    } catch {
+      if (requestId === fileRequestRef.current) {
+        setFileContent('Error connecting to backend to fetch file.');
+      }
     } finally {
-      setIsLoadingFile(false);
+      if (requestId === fileRequestRef.current) setIsLoadingFile(false);
     }
   };
 
@@ -431,6 +461,7 @@ function App() {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
+    const repoName = selectedRepo.repo_name;
     setChatMessages(prev => [...prev, userMessage]);
     const queryToSend = currentQuery;
     setCurrentQuery('');
@@ -441,13 +472,13 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          repo_name: selectedRepo.repo_name,
+          repo_name: repoName,
           query: queryToSend,
           top_k: 5
         })
       });
 
-      if (!res.ok) throw new Error('Failed to query assistant');
+      if (!res.ok) throw new Error(await getErrorMessage(res, 'Failed to query assistant.'));
 
       const data = await res.json();
 
@@ -459,23 +490,26 @@ function App() {
       };
 
       const updatedMessages = [...chatMessages, userMessage, assistantMessage];
-      setChatMessages(updatedMessages);
-      setRetrievedChunks(data.retrieved_chunks);
-
+      if (selectedRepoNameRef.current === repoName) setChatMessages(updatedMessages);
       try {
-        await fetch(`${API_BASE_URL}/api/chat/${selectedRepo.repo_name}/history`, {
+        const historyResponse = await fetch(`${API_BASE_URL}/api/chat/${encodeURIComponent(repoName)}/history`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedMessages)
         });
+        if (!historyResponse.ok) {
+          throw new Error(await getErrorMessage(historyResponse, 'Failed to save chat history.'));
+        }
       } catch (e) {
         console.error('Failed to save chat history:', e);
+        setUploadError(e.message);
       }
 
     } catch (err) {
-      setChatMessages(prev => [...prev, {
+      console.error('Failed to query assistant:', err);
+      if (selectedRepoNameRef.current === repoName) setChatMessages(prev => [...prev, {
         sender: 'assistant',
-        text: 'Error generating response. Please check your Gemini API key and try again.',
+        text: err.message || 'Error generating response. Please check your Gemini API key and try again.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
     } finally {
@@ -483,7 +517,7 @@ function App() {
     }
   };
 
-  const parseMarkdownAndCitations = (text, citations = []) => {
+  const parseMarkdownAndCitations = (text) => {
     if (!text) return '';
 
     const blocks = [];
@@ -809,7 +843,7 @@ function App() {
                       <div key={index} className={`message-wrapper ${msg.sender}`}>
                         <div className="message-bubble markdown-body">
                           {msg.sender === 'assistant'
-                            ? parseMarkdownAndCitations(msg.text, msg.citations)
+                            ? parseMarkdownAndCitations(msg.text)
                             : msg.text}
                         </div>
                         <div className="message-meta">
@@ -914,7 +948,5 @@ function App() {
     </div>
   );
 }
-
-const var_ref = typeof window !== 'undefined' ? window : {};
 
 export default App;
