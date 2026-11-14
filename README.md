@@ -82,9 +82,4 @@ Configuration:
 
 ---
 
-## Running Automated Tests
 
-Run backend unit tests for chunking, API endpoints, and vector retrieval:
-```bash
-python -m pytest
-```
